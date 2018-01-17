@@ -4,6 +4,9 @@
 # © 2016 Serv. Tecnol. Avanzados - Pedro M. Baeza
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
 
+from collections import OrderedDict
+from datetime import datetime
+import logging
 from openerp import models, fields, api, exceptions, workflow, _
 try:
     # This is to avoid the drop of the column total each time you update
@@ -13,6 +16,38 @@ try:
     payment_order._columns['total'].nodrop = True
 except ImportError:
     pass
+
+_logger = logging.getLogger(__name__)
+
+
+def chunks(l, n):
+    """Yield successive n-sized chunks from l."""
+    for i in range(0, len(l), n):
+        yield l[i:i + n]
+
+
+def get_values_clause_bulk(lst):
+    """Helper function for bulk inserts"""
+    fst_dict = lst and lst[0] or {}
+
+    query = ' (' + ','.join(
+        '"%s"' % key for key in
+        OrderedDict(fst_dict).keys()) + ') VALUES '
+
+    values_query = '(' + ','.join(
+        '%s' for i in range(len(fst_dict))) + ')'
+
+    values = []
+    count = 0
+    for dct in lst:
+        count += 1
+        query += values_query
+        values += OrderedDict(dct).values()
+
+        if count != len(lst):
+            query += ', '
+
+    return (query, values)
 
 
 class PaymentOrder(models.Model):
@@ -121,24 +156,27 @@ class PaymentOrder(models.Model):
         setting of the payment.order
         Re-generate the bank payment lines
         """
+        create_time = datetime.now()
+
         res = super(PaymentOrder, self).action_open()
-        bplo = self.env['bank.payment.line']
         today = fields.Date.context_today(self)
         for order in self:
+            if order.date_prefered == 'due':
+                requested_date = payline.ml_maturity_date or today
+            elif order.date_prefered == 'fixed':
+                requested_date = order.date_scheduled or today
+            else:
+                requested_date = today
+
+            self.env.cr.execute(
+                'UPDATE payment_line SET date = %s WHERE id IN %s',
+                (requested_date, tuple(order.line_ids.ids)))
+
             # Delete existing bank payment lines
             order.bank_line_ids.unlink()
             # Create the bank payment lines from the payment lines
             group_paylines = {}  # key = hashcode
             for payline in order.line_ids:
-                # Compute requested payment date
-                if order.date_prefered == 'due':
-                    requested_date = payline.ml_maturity_date or today
-                elif order.date_prefered == 'fixed':
-                    requested_date = order.date_scheduled or today
-                else:
-                    requested_date = today
-                # Write requested_date on 'date' field of payment line
-                payline.date = requested_date
                 # Group options
                 if order.mode.group_lines:
                     hashcode = payline.payment_line_hashcode()
@@ -155,6 +193,8 @@ class PaymentOrder(models.Model):
                         'total': payline.amount_currency,
                     }
             # Create bank payment lines
+            all_values = []
+            to_update_payment_line_ids = []
             for paydict in group_paylines.values():
                 # Block if a bank payment line is <= 0
                 if paydict['total'] <= 0:
@@ -163,6 +203,55 @@ class PaymentOrder(models.Model):
                         "or null (%.2f) !")
                         % (paydict['paylines'][0].partner_id.name,
                            paydict['total']))
-                vals = self._prepare_bank_payment_line(paydict['paylines'])
-                bplo.create(vals)
+                new_values = self._prepare_bank_payment_line(paydict['paylines'])
+                new_values = self.env['bank.payment.line'].\
+                    _add_missing_default_values(new_values)
+
+                new_values.update({
+                    'create_uid': self.env.uid,
+                    'write_uid': self.env.uid,
+                    'create_date': create_time,
+                    'write_date': create_time,
+                    'amount_currency':
+                        sum([payline.amount_currency
+                             for payline in paydict['paylines']])
+                })
+
+                if new_values.get('name', '/') == '/':
+                    new_values['name'] = self.env['ir.sequence'].next_by_code(
+                        'bank.payment.line')
+
+                to_update_payment_line_ids.append(new_values['payment_line_ids'][0][2])
+                del new_values['payment_line_ids']
+
+                all_values.append(new_values)
+
+            created_count = 0
+            created_ids = []
+            for next_values in chunks(all_values, 1000):
+                created_count += len(next_values)
+                clause, values = get_values_clause_bulk(next_values)
+                self.env.cr.execute("INSERT INTO bank_payment_line %s RETURNING id"
+                                    % (clause), values)
+                _logger.debug("Created %s of %s bank payment lines" %
+                              (created_count, len(all_values)))
+
+                created_ids += [id[0] for id in self.env.cr.fetchall()]
+
+            assert len(to_update_payment_line_ids) == len(created_ids), \
+                'Something went wrong while creating bank payment lines, ' \
+                'this did not result in the expected amount.'
+
+            bank_payment_info = dict(zip(created_ids, to_update_payment_line_ids))
+
+            update_str = ""
+            values = []
+            for bank_payment_line_id, payment_line_ids in \
+                    bank_payment_info.items():
+                update_str += 'UPDATE payment_line SET bank_line_id = %s ' \
+                              'WHERE id IN %s; '
+                values += [bank_payment_line_id, tuple(payment_line_ids)]
+
+            self.env.cr.execute(update_str, values)
+
         return res
