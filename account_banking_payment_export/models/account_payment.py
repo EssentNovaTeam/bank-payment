@@ -167,7 +167,7 @@ class PaymentOrder(models.Model):
                     requested_date = payline.ml_maturity_date or today
                     if requested_date not in date_update_dict:
                         date_update_dict[requested_date] = []
-                    date_update_dict.append(payline.id)
+                    date_update_dict[requested_date].append(payline.id)
             else:
                 if order.date_prefered == 'fixed':
                     requested_date = order.date_scheduled or today
