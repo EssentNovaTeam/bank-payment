@@ -161,16 +161,25 @@ class PaymentOrder(models.Model):
         res = super(PaymentOrder, self).action_open()
         today = fields.Date.context_today(self)
         for order in self:
+            date_update_dict = {}
             if order.date_prefered == 'due':
-                requested_date = payline.ml_maturity_date or today
-            elif order.date_prefered == 'fixed':
-                requested_date = order.date_scheduled or today
+                for payline in order.line_ids:
+                    requested_date = payline.ml_maturity_date or today
+                    if requested_date not in date_update_dict:
+                        date_update_dict[requested_date] = []
+                    date_update_dict.append(payline.id)
             else:
-                requested_date = today
+                if order.date_prefered == 'fixed':
+                    requested_date = order.date_scheduled or today
+                else:
+                    requested_date = today
 
-            self.env.cr.execute(
-                'UPDATE payment_line SET date = %s WHERE id IN %s',
-                (requested_date, tuple(order.line_ids.ids)))
+                date_update_dict[requested_date] = order.line_ids.ids
+
+            for date, payment_line_ids in date_update_dict.items():
+                self.env.cr.execute(
+                    'UPDATE payment_line SET date = %s WHERE id IN %s',
+                    (date, tuple(payment_line_ids)))
 
             # Delete existing bank payment lines
             order.bank_line_ids.unlink()
