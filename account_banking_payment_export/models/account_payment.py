@@ -8,6 +8,8 @@ from collections import OrderedDict
 from datetime import datetime
 import logging
 from openerp import models, fields, api, exceptions, workflow, _
+from openerp.models import PREFETCH_MAX
+
 try:
     # This is to avoid the drop of the column total each time you update
     # the module account_payment, because the store attribute is set later
@@ -237,7 +239,7 @@ class PaymentOrder(models.Model):
 
             created_count = 0
             created_ids = []
-            for next_values in chunks(all_values, 1000):
+            for next_values in chunks(all_values, PREFETCH_MAX):
                 created_count += len(next_values)
                 clause, values = get_values_clause_bulk(next_values)
                 self.env.cr.execute("INSERT INTO bank_payment_line %s RETURNING id"
