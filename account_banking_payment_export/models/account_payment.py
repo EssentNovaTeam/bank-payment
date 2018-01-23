@@ -263,4 +263,7 @@ class PaymentOrder(models.Model):
 
             self.env.cr.execute(update_str, values)
 
+        # Invalidate cache after mass update
+        self.env.invalidate_all()
+
         return res
