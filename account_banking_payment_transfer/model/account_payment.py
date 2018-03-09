@@ -4,7 +4,6 @@
 # © 2013-2014 ACSONE SA (<http://acsone.eu>).
 # © 2014-2015 Akretion (www.akretion.com)
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
-
 from openerp import models, fields, api, _
 from openerp.exceptions import Warning as UserError
 
@@ -188,7 +187,7 @@ class PaymentOrder(models.Model):
                 "same as the currency of the company (%s). This "
                 "is not supported for the moment.")
                 % (bank_line.currency.name, company_currency.name))
-        aml_obj = self.env['account.move.line']
+        aml_obj = self.env['account.move.line'].with_context(novalidate=True)
         # create the payment/debit counterpart move line
         # on the partner account
         partner_ml_vals = self._prepare_move_line_partner_account(
@@ -215,7 +214,7 @@ class PaymentOrder(models.Model):
         generated.
         """
         am_obj = self.env['account.move']
-        aml_obj = self.env['account.move.line']
+        aml_obj = self.env['account.move.line'].with_context(novalidate=True)
         labels = {
             'payment': _('Payment'),
             'debit': _('Direct debit'),
@@ -244,8 +243,8 @@ class PaymentOrder(models.Model):
                 trf_ml_vals = self._prepare_move_line_transfer_account(
                     total_amount, move, blines, labels)
                 aml_obj.create(trf_ml_vals)
-                self._reconcile_payment_lines(blines)
                 move.post()
+                self._reconcile_payment_lines(blines)
 
         # State field is written by act_sent_wait
         self.write({'date_sent': fields.Date.context_today(self)})
