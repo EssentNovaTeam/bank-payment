@@ -4,9 +4,10 @@
 # © 2013-2014 ACSONE SA (<http://acsone.eu>).
 # © 2014-2015 Akretion (www.akretion.com)
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
-
 from openerp import models, fields, api, _
 from openerp.exceptions import Warning as UserError
+
+from profilehooks import profile
 
 
 class PaymentOrder(models.Model):
@@ -208,6 +209,7 @@ class PaymentOrder(models.Model):
                 self.action_sent_no_move_line_hook(bline)
 
     @api.one
+    @profile(immediate=True, dirs=True)
     def action_sent(self):
         """
         Create the moves that pay off the move lines from
