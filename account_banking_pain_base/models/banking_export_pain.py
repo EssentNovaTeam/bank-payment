@@ -107,10 +107,10 @@ class BankingExportPain(models.AbstractModel):
         xml_string = etree.tostring(
             xml_root, pretty_print=True, encoding='UTF-8',
             xml_declaration=True)
+        del xml_root
         logger.debug(
             "Generated SEPA XML file in format %s below"
             % gen_args['pain_flavor'])
-        logger.debug(xml_string)
         self._validate_xml(xml_string, gen_args)
 
         order_ref = []
