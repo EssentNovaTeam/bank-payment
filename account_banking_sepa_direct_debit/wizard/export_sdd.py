@@ -147,7 +147,7 @@ class BankingExportSddWizard(models.TransientModel):
         for payment_order in self.payment_order_ids:
             total_amount = total_amount + payment_order.total
             # Iterate each payment lines
-            for line in payment_order.bank_line_ids:
+            for line in self.chunked(payment_order.bank_line_ids):
                 transactions_count_1_6 += 1
                 priority = line.priority
                 # The field line.date is the requested payment date
@@ -190,11 +190,11 @@ class BankingExportSddWizard(models.TransientModel):
                     seq_type = seq_type_map[seq_type_label]
                 key = (line.date, priority, seq_type, scheme)
                 if key in lines_per_group:
-                    lines_per_group[key].append(line)
+                    lines_per_group[key].append(line.id)
                 else:
-                    lines_per_group[key] = [line]
+                    lines_per_group[key] = [line.id]
 
-        for (requested_date, priority, sequence_type, scheme), lines in \
+        for (requested_date, priority, sequence_type, scheme), line_ids in \
                 lines_per_group.items():
             # B. Payment info
             payment_info_2_0, nb_of_transactions_2_4, control_sum_2_5 = \
@@ -231,7 +231,7 @@ class BankingExportSddWizard(models.TransientModel):
                 'SEPA Creditor Identifier', {'self': self}, 'SEPA', gen_args)
             transactions_count_2_4 = 0
             amount_control_sum_2_5 = 0.0
-            for line in lines:
+            for line in self.chunked(line_ids, model='bank.payment.line'):
                 transactions_count_2_4 += 1
                 # C. Direct Debit Transaction Info
                 dd_transaction_info_2_28 = etree.SubElement(
