@@ -205,6 +205,7 @@ class PaymentOrder(models.Model):
             # Create bank payment lines
             all_values = []
             to_update_payment_line_ids = []
+            nr_of_values = 0
             for paydict in group_paylines.values():
                 # Block if a bank payment line is <= 0
                 if paydict['total'] <= 0:
@@ -217,6 +218,7 @@ class PaymentOrder(models.Model):
                 new_values = self.env['bank.payment.line'].\
                     _add_missing_default_values(new_values)
 
+                nr_of_values += 1
                 new_values.update({
                     'create_uid': self.env.uid,
                     'write_uid': self.env.uid,
@@ -228,8 +230,8 @@ class PaymentOrder(models.Model):
                 })
 
                 if new_values.get('name', '/') == '/':
-                    new_values['name'] = self.env['ir.sequence'].next_by_code(
-                        'bank.payment.line')
+                    new_values['name'] = '%s/%s' % (
+                        order.reference, nr_of_values)
 
                 to_update_payment_line_ids.append(new_values['payment_line_ids'][0][2])
                 del new_values['payment_line_ids']
