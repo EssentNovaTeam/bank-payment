@@ -21,14 +21,10 @@
 ##############################################################################
 
 
-import logging
 from openerp import models, fields, api, _
-from openerp.models import PREFETCH_MAX
 from openerp.exceptions import Warning as UserError
 from openerp import workflow
 from lxml import etree
-
-logger = logging.getLogger(__name__)
 
 
 class BankingExportSddWizard(models.TransientModel):
