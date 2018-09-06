@@ -319,6 +319,29 @@ class BankingExportSddWizard(models.TransientModel):
         return self.finalize_sepa_file_creation(
             xml_root, total_amount, transactions_count_1_6, gen_args)
 
+    @api.model
+    def chunked(self, records_or_ids, model=None, size=PREFETCH_MAX,
+                whole=False):
+        """ Generator to iterate over potentially large amounts of records
+        while keeping cache size under control. """
+        ids = records_or_ids
+        if isinstance(records_or_ids, models.BaseModel):
+            ids = records_or_ids.with_context(prefetch=False).ids
+            model = records_or_ids._name
+        if not model:
+            raise Warning(
+                'If you pass ids to be chunked you also have to pass a model')
+        length = len(ids)
+        for i in range(0, length, size):
+            self.env.invalidate_all()
+            logger.debug('Fetching %s-%s of %s records_or_ids of model %s',
+                         i + 1, min(i + size, length), length, model)
+            if whole:
+                yield self.env[model].browse(ids[i:i + size])
+            else:
+                for record in self.env[model].browse(ids[i:i + size]):
+                    yield record
+
     @api.multi
     def save_sepa(self):
         """Save the SEPA Direct Debit file: mark all payments in the file
@@ -335,26 +358,34 @@ class BankingExportSddWizard(models.TransientModel):
                 'name': self.filename,
                 'datas': self.file,
                 })
-            to_expire_mandates = abmo.browse([])
-            first_mandates = abmo.browse([])
-            all_mandates = abmo.browse([])
-            for bline in order.bank_line_ids:
-                if bline.mandate_id in all_mandates:
+            to_expire_mandates = []
+            first_mandates = []
+            all_mandates = []
+            bl_ids = order.bank_line_ids.ids
+            for bline in self.chunked(bl_ids, models='payment.order'):
+                if bline.mandate_id.id in all_mandates:
                     continue
-                all_mandates += bline.mandate_id
+                all_mandates.append(bline.mandate_id.id)
                 if bline.mandate_id.type == 'oneoff':
-                    to_expire_mandates += bline.mandate_id
+                    to_expire_mandates.append(bline.mandate_id.id)
                 elif bline.mandate_id.type == 'recurrent':
                     seq_type = bline.mandate_id.recurrent_sequence_type
                     if seq_type == 'final':
-                        to_expire_mandates += bline.mandate_id
+                        to_expire_mandates.append(bline.mandate_id.id)
                     elif seq_type == 'first':
-                        first_mandates += bline.mandate_id
-            all_mandates.write(
-                {'last_debit_date': fields.Date.context_today(self)})
-            to_expire_mandates.write({'state': 'expired'})
-            first_mandates.write({
-                'recurrent_sequence_type': 'recurring',
-                'sepa_migrated': True,
-                })
+                        first_mandates.append(bline.mandate_id.id)
+            model = 'account_banking_mandate'
+            for mandate_chunck in self.chunked(
+                    all_mandates, model=model, whole=True):
+                mandate_chunck.write(
+                    {'last_debit_date': fields.Date.context_today(self)})
+            for exp_mandate_chunk in self.chunked(
+                    all_mandates, model=model, whole=True):
+                exp_mandate_chunk.write({'state': 'expired'})
+            for f_mandate_chunk in self.chunked(
+                    first_mandates, model=model, whole=True):
+                f_mandate_chunk.write({
+                    'recurrent_sequence_type': 'recurring',
+                    'sepa_migrated': True,
+                    })
         return True
