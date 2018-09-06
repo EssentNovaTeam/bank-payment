@@ -140,12 +140,12 @@ class BankingExportSddWizard(models.TransientModel):
                           "(reference '%s').")
                         % (line.partner_id.name, line.name))
                 scheme = line.mandate_id.scheme
-                if line.mandate_id.state != 'valid':
-                    raise UserError(
-                        _("The SEPA Direct Debit mandate with reference '%s' "
-                          "for partner '%s' has expired.")
-                        % (line.mandate_id.unique_mandate_reference,
-                           line.mandate_id.partner_id.name))
+                # if line.mandate_id.state != 'valid':
+                #     raise Warning(
+                #         _("The SEPA Direct Debit mandate with reference '%s' "
+                #           "for partner '%s' has expired.")
+                #         % (line.mandate_id.unique_mandate_reference,
+                #            line.mandate_id.partner_id.name))
                 if line.mandate_id.type == 'oneoff':
                     seq_type = 'OOFF'
                     if line.mandate_id.last_debit_date:
@@ -338,7 +338,8 @@ class BankingExportSddWizard(models.TransientModel):
             to_expire_mandates = abmo.browse([])
             first_mandates = abmo.browse([])
             all_mandates = abmo.browse([])
-            for bline in order.bank_line_ids:
+            bl_ids = order.with_context(prefetch=False).bank_line_ids.ids
+            for bline in self.chunked(bl_ids, model='bank.payment.line'):
                 if bline.mandate_id in all_mandates:
                     continue
                 all_mandates += bline.mandate_id
@@ -350,6 +351,7 @@ class BankingExportSddWizard(models.TransientModel):
                         to_expire_mandates += bline.mandate_id
                     elif seq_type == 'first':
                         first_mandates += bline.mandate_id
+
             all_mandates.write(
                 {'last_debit_date': fields.Date.context_today(self)})
             to_expire_mandates.write({'state': 'expired'})
