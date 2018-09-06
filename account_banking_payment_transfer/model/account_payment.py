@@ -4,9 +4,12 @@
 # © 2013-2014 ACSONE SA (<http://acsone.eu>).
 # © 2014-2015 Akretion (www.akretion.com)
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
-
+import logging
 from openerp import models, fields, api, _
 from openerp.exceptions import Warning as UserError
+from openerp.models import PREFETCH_MAX
+
+logger = logging.getLogger(__name__)
 
 
 class PaymentOrder(models.Model):
@@ -207,6 +210,29 @@ class PaymentOrder(models.Model):
             else:
                 self.action_sent_no_move_line_hook(bline)
 
+    @api.model
+    def chunked(self, records_or_ids, model=None, size=PREFETCH_MAX,
+                whole=False):
+        """ Generator to iterate over potentially large amounts of records
+        while keeping cache size under control. """
+        ids = records_or_ids
+        if isinstance(records_or_ids, models.BaseModel):
+            ids = records_or_ids.with_context(prefetch=False).ids
+            model = records_or_ids._name
+        if not model:
+            raise Warning(
+                'If you pass ids to be chunked you also have to pass a model')
+        length = len(ids)
+        for i in range(0, length, size):
+            self.env.invalidate_all()
+            logger.debug('Fetching %s-%s of %s records_or_ids of model %s',
+                         i + 1, min(i + size, length), length, model)
+            if whole:
+                yield self.env[model].browse(ids[i:i + size])
+            else:
+                for record in self.env[model].browse(ids[i:i + size]):
+                    yield record
+
     @api.one
     def action_sent(self):
         """
@@ -226,26 +252,49 @@ class PaymentOrder(models.Model):
             # key = unique identifier (date or True or line.id)
             # value = [pay_line1, pay_line2, ...]
             trfmoves = {}
-            for bline in self.bank_line_ids:
+            bl_ids = self.bank_line_ids.ids
+            bl_model = 'bank.payment.line'
+            logger.debug("Getting hash codes for bank payment lines.")
+            for bline in self.chunked(bl_ids, model=bl_model):
                 hashcode = bline.move_line_transfer_account_hashcode()
                 if hashcode in trfmoves:
-                    trfmoves[hashcode].append(bline)
+                    trfmoves[hashcode].append(bline.id)
                 else:
-                    trfmoves[hashcode] = [bline]
-
-            for hashcode, blines in trfmoves.iteritems():
+                    trfmoves[hashcode] = [bline.id]
+            for hashcode, bline_ids in trfmoves.iteritems():
                 mvals = self._prepare_transfer_move()
+                logger.debug("Creating transfer move with values: %s", mvals)
                 move = am_obj.create(mvals)
                 total_amount = 0
-                for bline in blines:
-                    total_amount += bline.amount_currency
-                    self._create_move_line_partner_account(bline, move, labels)
-                # create the payment/debit move line on the transfer account
+
+                # Chop up the bank payment lines in parts of size PREFETCH_MAX
+                # and bulk create the payment/debit move line on the transfer
+                # account.
+                logger.debug("Creating payment/debit move lines for "
+                             "partners accounts.")
+                for bls in self.chunked(bline_ids, model=bl_model, whole=True):
+                    total_amount += sum(bls.mapped('amount_currency'))
+                    self._create_move_line_partner_account(bls, move, labels)
+
+                # Get at most 2 bank lines to generate the transfer move line
+                # from. There is no need to pass the entire subset of bank
+                # payment lines just to take values from 1 or 2 lines.
+                subset_bank_lines = self.env[bl_model].browse(bline_ids[:2])
                 trf_ml_vals = self._prepare_move_line_transfer_account(
-                    total_amount, move, blines, labels)
+                    total_amount, move, subset_bank_lines, labels)
                 aml_obj.create(trf_ml_vals)
-                self._reconcile_payment_lines(blines)
-                move.post()
+                logger.debug("Successfully created payment/debit transfer "
+                             "move.")
+                # Reconcile the new move lines with the payment lines.
+                logger.debug("Starting reconciliation of payment lines.")
+                for bls in self.chunked(bline_ids, model=bl_model, whole=True):
+                    self._reconcile_payment_lines(bls)
+                if move.journal_id.entry_posted:
+                    logger.debug("Posting transfer move.")
+                    move.post()
+
+        logger.debug("Successfully completed action_sent of payment orders %s"
+                     ",".join(self.mapped('reference')))
 
         # State field is written by act_sent_wait
         self.write({'date_sent': fields.Date.context_today(self)})
