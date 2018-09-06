@@ -339,7 +339,7 @@ class BankingExportSddWizard(models.TransientModel):
             first_mandates = abmo.browse([])
             all_mandates = abmo.browse([])
             bl_ids = order.with_context(prefetch=False).bank_line_ids.ids
-            for bline in self.chunked(bl_ids, model='payment.order'):
+            for bline in self.chunked(bl_ids, model='bank.payment.line'):
                 if bline.mandate_id in all_mandates:
                     continue
                 all_mandates += bline.mandate_id
