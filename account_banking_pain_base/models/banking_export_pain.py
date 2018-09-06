@@ -6,6 +6,7 @@
 
 from openerp import models, api, _
 from openerp.exceptions import Warning
+from openerp.models import PREFETCH_MAX
 from openerp.tools.safe_eval import safe_eval
 from datetime import datetime
 from lxml import etree
@@ -24,6 +25,25 @@ logger = logging.getLogger(__name__)
 
 class BankingExportPain(models.AbstractModel):
     _name = 'banking.export.pain'
+
+    @api.model
+    def chunked(self, records_or_ids, model=None, size=PREFETCH_MAX):
+        """ Generator to iterate over potentially large amounts of records
+        while keeping cache size under control """
+        ids = records_or_ids
+        if isinstance(records_or_ids, models.BaseModel):
+            ids = records_or_ids.with_context(prefetch=False).ids
+            model = records_or_ids._name
+        if not model:
+            raise Warning(
+                'If you pass ids to be chunked you also have to pass a model')
+        length = len(ids)
+        for i in range(0, length, size):
+            self.env.invalidate_all()
+            logger.debug('Fetching %s-%s of %s records_or_ids of model %s',
+                         i+1, min(i + size, length), length, model)
+            for record in self.env[model].browse(ids[i:i + size]):
+                yield record
 
     @api.model
     def _validate_iban(self, iban):
@@ -107,10 +127,10 @@ class BankingExportPain(models.AbstractModel):
         xml_string = etree.tostring(
             xml_root, pretty_print=True, encoding='UTF-8',
             xml_declaration=True)
+        del xml_root
         logger.debug(
             "Generated SEPA XML file in format %s below"
             % gen_args['pain_flavor'])
-        logger.debug(xml_string)
         self._validate_xml(xml_string, gen_args)
 
         order_ref = []

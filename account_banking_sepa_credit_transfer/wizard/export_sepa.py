@@ -135,7 +135,7 @@ class BankingExportSepaWizard(models.TransientModel):
         # values = list of lines as object
         for payment_order in self.payment_order_ids:
             total_amount = total_amount + payment_order.total
-            for line in payment_order.bank_line_ids:
+            for line in self.chunked(payment_order.bank_line_ids):
                 priority = line.priority
                 # The field line.date is the requested payment date
                 # taking into account the 'date_prefered' setting
@@ -143,10 +143,10 @@ class BankingExportSepaWizard(models.TransientModel):
                 # in the inherit of action_open()
                 key = (line.date, priority)
                 if key in lines_per_group:
-                    lines_per_group[key].append(line)
+                    lines_per_group[key].append(line.id)
                 else:
-                    lines_per_group[key] = [line]
-        for (requested_date, priority), lines in lines_per_group.items():
+                    lines_per_group[key] = [line.id]
+        for (requested_date, priority), line_ids in lines_per_group.items():
             # B. Payment info
             payment_info_2_0, nb_of_transactions_2_4, control_sum_2_5 = \
                 self.generate_start_payment_info_block(
@@ -171,7 +171,7 @@ class BankingExportSepaWizard(models.TransientModel):
             charge_bearer_2_24.text = self.charge_bearer
             transactions_count_2_4 = 0
             amount_control_sum_2_5 = 0.0
-            for line in lines:
+            for line in self.chunked(line_ids, model='bank.payment.line'):
                 transactions_count_1_6 += 1
                 transactions_count_2_4 += 1
                 # C. Credit Transfer Transaction Info
