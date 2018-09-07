@@ -5,6 +5,7 @@
 # © 2014-2015 Akretion (www.akretion.com)
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
 import logging
+import time
 from openerp import models, fields, api, _
 from openerp.exceptions import Warning as UserError
 from openerp.models import PREFETCH_MAX
@@ -205,14 +206,41 @@ class PaymentOrder(models.Model):
     @api.multi
     def _reconcile_payment_lines(self, bank_payment_lines):
         """ Now that the downstream method circumvents ORM triggers on
-        reconciliation, collect the ids of the reconciled move lines and pass
-        them on for manual processing as seen fit """
+        reconciliation, collect the ids of the reconciled move lines. Run
+        triggers manually and pass on the ids on for manual processing in
+        overrides of this method """
         reconciled_ids = []
         for bline in bank_payment_lines:
             if all([pline.move_line_id for pline in bline.payment_line_ids]):
                 reconciled_ids += bline.debit_reconcile()
             else:
                 self.action_sent_no_move_line_hook(bline)
+
+        # Call triggers manually
+        t0 = time.time()
+        reconciled = self.env['account.move.line'].browse(reconciled_ids)
+        self.env.invalidate([
+            (reconciled._fields['reconcile_partial_id'], reconciled.ids),
+            (reconciled._fields['reconcile_id'], reconciled.ids),
+        ])
+        result_store = reconciled._store_get_values(
+            ['reconcile_id', 'reconcile_partial_id'])
+        reconciled.modified(['reconcile_id', 'reconcile_partial_id'])
+
+        for _order, model, store_ids, field_names in result_store:
+            obj = self.env[model]
+            self.env.cr.execute(
+                'select id from ' + obj._table + ' where id IN %s',
+                (tuple(store_ids),))
+            record_ids = map(lambda x: x[0], self.env.cr.fetchall())
+            if record_ids:
+                obj.browse(record_ids)._store_set_values(field_names)
+
+        # recompute new-style fields
+        reconciled.recompute()
+        logger.debug('Triggers for %s move lines took %ss',
+                     len(reconciled), round((time.time() - t0), 2))
+
         return reconciled_ids
 
     @api.model

@@ -59,14 +59,8 @@ class BankPaymentLine(models.Model):
         logging and additional access and sanity checks. This is of course
         dangerous and needs to be validated and/or reconsidered (TODO).
 
-        For one, this probably means that supplier invoices are no longer going
-        into paid status if it is paid in a SEPA order (TODO).
-
-        It might be an option to collect the move lines and fire an ORM
-        'modified' trigger on move lines' reconciliation fields for a chunk
-        of move lines in bulk. This is likely still much more performant
-        than firing them for each individually (TODO). For this purpose, return
-        a list of the reconciled move line ids.
+        This method's caller should normally run the required triggers manually
+        so we return a list of the reconciled move line ids.
 
         :param payment_line_id: the single id of the canceled payment line
         """
