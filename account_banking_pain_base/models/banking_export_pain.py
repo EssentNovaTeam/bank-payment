@@ -28,7 +28,7 @@ class BankingExportPain(models.AbstractModel):
 
     @api.model
     def chunked(self, records_or_ids, model=None, size=PREFETCH_MAX,
-                whole=False):
+                whole=False, note=None):
         """ Generator to iterate over potentially large amounts of records
         while keeping cache size under control """
         ids = records_or_ids
@@ -39,10 +39,14 @@ class BankingExportPain(models.AbstractModel):
             raise Warning(
                 'If you pass ids to be chunked you also have to pass a model')
         length = len(ids)
+        if note is None:
+            note = ''
+        if note:
+            note = '%s: ' % note
         for i in range(0, length, size):
             self.env.invalidate_all()
-            logger.debug('Fetching %s-%s of %s records_or_ids of model %s',
-                         i+1, min(i + size, length), length, model)
+            logger.debug('%sFetching %s-%s of %s records_or_ids of model %s',
+                         note, i+1, min(i + size, length), length, model)
             if whole:
                 yield self.env[model].browse(ids[i:i + size])
             for record in self.env[model].browse(ids[i:i + size]):

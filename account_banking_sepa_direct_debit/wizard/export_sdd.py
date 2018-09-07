@@ -126,7 +126,8 @@ class BankingExportSddWizard(models.TransientModel):
         for payment_order in self.payment_order_ids:
             total_amount = total_amount + payment_order.total
             # Iterate each payment lines
-            for line in self.chunked(payment_order.bank_line_ids):
+            for line in self.chunked(payment_order.bank_line_ids,
+                                     note='Validating mandates'):
                 transactions_count_1_6 += 1
                 priority = line.priority
                 # The field line.date is the requested payment date
@@ -142,7 +143,7 @@ class BankingExportSddWizard(models.TransientModel):
                 scheme = line.mandate_id.scheme
                 # if line.mandate_id.state != 'valid':
                 #     raise Warning(
-                #         _("The SEPA Direct Debit mandate with reference '%s' "
+                #         _("The SEPA Direct Debit mandate with reference '%s'"
                 #           "for partner '%s' has expired.")
                 #         % (line.mandate_id.unique_mandate_reference,
                 #            line.mandate_id.partner_id.name))
@@ -210,7 +211,8 @@ class BankingExportSddWizard(models.TransientModel):
                 'SEPA Creditor Identifier', {'self': self}, 'SEPA', gen_args)
             transactions_count_2_4 = 0
             amount_control_sum_2_5 = 0.0
-            for line in self.chunked(line_ids, model='bank.payment.line'):
+            for line in self.chunked(line_ids, model='bank.payment.line',
+                                     note='Generating SEPA file'):
                 transactions_count_2_4 += 1
                 # C. Direct Debit Transaction Info
                 dd_transaction_info_2_28 = etree.SubElement(
@@ -339,7 +341,8 @@ class BankingExportSddWizard(models.TransientModel):
             first_mandates = abmo.browse([])
             all_mandates = abmo.browse([])
             bl_ids = order.with_context(prefetch=False).bank_line_ids.ids
-            for bline in self.chunked(bl_ids, model='bank.payment.line'):
+            for bline in self.chunked(bl_ids, model='bank.payment.line',
+                                      note='Collecting mandate modifications'):
                 if bline.mandate_id in all_mandates:
                     continue
                 all_mandates += bline.mandate_id

@@ -204,15 +204,20 @@ class PaymentOrder(models.Model):
 
     @api.multi
     def _reconcile_payment_lines(self, bank_payment_lines):
+        """ Now that the downstream method circumvents ORM triggers on
+        reconciliation, collect the ids of the reconciled move lines and pass
+        them on for manual processing as seen fit """
+        reconciled_ids = []
         for bline in bank_payment_lines:
             if all([pline.move_line_id for pline in bline.payment_line_ids]):
-                bline.debit_reconcile()
+                reconciled_ids += bline.debit_reconcile()
             else:
                 self.action_sent_no_move_line_hook(bline)
+        return reconciled_ids
 
     @api.model
     def chunked(self, records_or_ids, model=None, size=PREFETCH_MAX,
-                whole=False):
+                whole=False, note=None):
         """ Generator to iterate over potentially large amounts of records
         while keeping cache size under control. """
         ids = records_or_ids
@@ -223,10 +228,14 @@ class PaymentOrder(models.Model):
             raise Warning(
                 'If you pass ids to be chunked you also have to pass a model')
         length = len(ids)
+        if note is None:
+            note = ''
+        if note:
+            note = '%s: ' % note
         for i in range(0, length, size):
             self.env.invalidate_all()
-            logger.debug('Fetching %s-%s of %s records_or_ids of model %s',
-                         i + 1, min(i + size, length), length, model)
+            logger.debug('%sFetching %s-%s of %s records_or_ids of model %s',
+                         note, i + 1, min(i + size, length), length, model)
             if whole:
                 yield self.env[model].browse(ids[i:i + size])
             else:
@@ -255,7 +264,8 @@ class PaymentOrder(models.Model):
             bl_ids = self.bank_line_ids.ids
             bl_model = 'bank.payment.line'
             logger.debug("Getting hash codes for bank payment lines.")
-            for bline in self.chunked(bl_ids, model=bl_model):
+            for bline in self.chunked(bl_ids, model=bl_model,
+                                      note='Generating hash codes'):
                 hashcode = bline.move_line_transfer_account_hashcode()
                 if hashcode in trfmoves:
                     trfmoves[hashcode].append(bline.id)
@@ -272,7 +282,8 @@ class PaymentOrder(models.Model):
                 # account.
                 logger.debug("Creating payment/debit move lines for "
                              "partners accounts.")
-                for bls in self.chunked(bline_ids, model=bl_model, whole=True):
+                for bls in self.chunked(bline_ids, model=bl_model, whole=True,
+                                        note='Generating partner move lines'):
                     total_amount += sum(bls.mapped('amount_currency'))
                     self._create_move_line_partner_account(bls, move, labels)
 
@@ -287,7 +298,8 @@ class PaymentOrder(models.Model):
                              "move.")
                 # Reconcile the new move lines with the payment lines.
                 logger.debug("Starting reconciliation of payment lines.")
-                for bls in self.chunked(bline_ids, model=bl_model, whole=True):
+                for bls in self.chunked(bline_ids, model=bl_model, whole=True,
+                                        note='Payment line reconciliation'):
                     self._reconcile_payment_lines(bls)
                 if move.journal_id.entry_posted:
                     logger.debug("Posting transfer move.")
