@@ -45,7 +45,7 @@ class BankPaymentLine(models.Model):
                     elif order_type == 'payment' and move_line.credit > 0:
                         bank_line.transfer_move_line_id = move_line
 
-    @api.one
+    @api.multi
     def debit_reconcile(self):
         """
         Reconcile a debit order's payment line with the the move line
@@ -54,9 +54,17 @@ class BankPaymentLine(models.Model):
         we do not expect a write off. Take partial reconciliations into
         account though.
 
+        This method was modified for Nova to drastically improve the
+        performance of the reconciliation by disabling ORM triggers, audit
+        logging and additional access and sanity checks. This is of course
+        dangerous and needs to be validated and/or reconsidered (TODO).
+
+        This method's caller should normally run the required triggers manually
+        so we return a list of the reconciled move line ids.
+
         :param payment_line_id: the single id of the canceled payment line
         """
-
+        self.ensure_one()
         transit_move_line = self.transit_move_line_id
 
         assert not transit_move_line.reconcile_id,\
@@ -91,4 +99,24 @@ class BankPaymentLine(models.Model):
 
             lines_to_rec += payment_line.move_line_id
 
-        lines_to_rec.reconcile_partial(type='auto')
+        if not any(line.reconcile_partial_id for line in lines_to_rec) and (
+                self.env.user.company_id.currency_id.is_zero(
+                    sum(l.debit - l.credit for l in lines_to_rec))):
+            # This is the simple case of a new, full reconciliation
+            self.env.cr.execute(
+                """ INSERT INTO account_move_reconcile
+                (create_date, create_uid, name, type) VALUES(
+                NOW(), %(uid)s, %(name)s, 'auto') RETURNING id""", {
+                    'name': self.name, 'uid': self.env.user.id,
+                })
+            rec_id = self.env.cr.fetchone()[0]
+            self.env.cr.execute(
+                """UPDATE account_move_line SET reconcile_id = %s
+                WHERE id in %s""", (rec_id, tuple(lines_to_rec.ids)))
+
+        else:  # Fallback on slow ORM reconciliation
+            lines_to_rec.with_context(
+                reconcile_name=self.name, no_balance_trigger=True
+            ).reconcile_partial(type='auto')
+
+        return lines_to_rec.ids

@@ -174,13 +174,19 @@ class AccountBankingMandate(models.Model):
         amendments that were already in this state, assume that the amendment
         was sent in the previous order and that no rejection has taken place.
         In that case, clear the amendment. """
-        self.filtered(lambda md: md.amendment_state == 'sent').write({
+        self.search([
+            ('id', 'in', self.ids),
+            ('amendment_state', '=', 'sent'),
+        ]).write({
             'amendment_state': False,
             'amendment_type': False,
             'original_debtor_account': False,
             'original_debtor_agent': False
         })
-        self.filtered(lambda md: md.amendment_state == 'next').write(
+        self.search([
+            ('id', 'in', self.ids),
+            ('amendment_state', '=', 'next'),
+        ]).write(
             {'amendment_state': 'sent'})
 
     @api.multi
@@ -188,12 +194,18 @@ class AccountBankingMandate(models.Model):
         """ A rejection has taken place. Set pending amendments back to next
         and reset mandate to FRST if this is a different financial institution
         """
-        self.filtered(lambda md: md.amendment_state == 'sent').write(
+        self.search([
+            ('id', 'in', self.ids),
+            ('amendment_state', '=', 'sent'),
+        ]).write(
             {'amendment_state': 'next'})
-        self.filtered(lambda md: md.amendment_state == 'next' and
-                      md.amendment_type == 'account' and
-                      md.original_debtor_agent).write(
-                          {'recurrent_sequence_type': 'first'})
+        self.search([
+            ('id', 'in', self.ids),
+            ('amendment_state', '=', 'next'),
+            ('amendment_type', '=', 'account'),
+            ('original_debtor_agent', '!=', False),
+        ]).write(
+            {'recurrent_sequence_type': 'first'})
 
     @api.model
     def get_amendment_vals(self, old_bank, new_bank):

@@ -20,11 +20,13 @@
 #
 ##############################################################################
 
-
+import logging
 from openerp import models, fields, api, _
 from openerp.exceptions import Warning as UserError
 from openerp import workflow
 from lxml import etree
+
+_logger = logging.getLogger(__name__)
 
 
 class BankingExportSddWizard(models.TransientModel):
@@ -126,7 +128,8 @@ class BankingExportSddWizard(models.TransientModel):
         for payment_order in self.payment_order_ids:
             total_amount = total_amount + payment_order.total
             # Iterate each payment lines
-            for line in self.chunked(payment_order.bank_line_ids):
+            for line in self.chunked(payment_order.bank_line_ids,
+                                     note='Validating mandates'):
                 transactions_count_1_6 += 1
                 priority = line.priority
                 # The field line.date is the requested payment date
@@ -142,7 +145,7 @@ class BankingExportSddWizard(models.TransientModel):
                 scheme = line.mandate_id.scheme
                 # if line.mandate_id.state != 'valid':
                 #     raise Warning(
-                #         _("The SEPA Direct Debit mandate with reference '%s' "
+                #         _("The SEPA Direct Debit mandate with reference '%s'"
                 #           "for partner '%s' has expired.")
                 #         % (line.mandate_id.unique_mandate_reference,
                 #            line.mandate_id.partner_id.name))
@@ -210,7 +213,8 @@ class BankingExportSddWizard(models.TransientModel):
                 'SEPA Creditor Identifier', {'self': self}, 'SEPA', gen_args)
             transactions_count_2_4 = 0
             amount_control_sum_2_5 = 0.0
-            for line in self.chunked(line_ids, model='bank.payment.line'):
+            for line in self.chunked(line_ids, model='bank.payment.line',
+                                     note='Generating SEPA file'):
                 transactions_count_2_4 += 1
                 # C. Direct Debit Transaction Info
                 dd_transaction_info_2_28 = etree.SubElement(
@@ -327,30 +331,32 @@ class BankingExportSddWizard(models.TransientModel):
         """
         abmo = self.env['account.banking.mandate']
         for order in self.payment_order_ids:
+            _logger.debug('Triggering workflow')
             workflow.trg_validate(
                 self._uid, 'payment.order', order.id, 'done', self._cr)
+            _logger.debug('Storing attachment')
             self.env['ir.attachment'].create({
                 'res_model': 'payment.order',
                 'res_id': order.id,
                 'name': self.filename,
                 'datas': self.file,
                 })
+            _logger.debug('Post-processing mandates')
             to_expire_mandates = abmo.browse([])
             first_mandates = abmo.browse([])
-            all_mandates = abmo.browse([])
-            bl_ids = order.with_context(prefetch=False).bank_line_ids.ids
-            for bline in self.chunked(bl_ids, model='bank.payment.line'):
-                if bline.mandate_id in all_mandates:
-                    continue
-                all_mandates += bline.mandate_id
-                if bline.mandate_id.type == 'oneoff':
-                    to_expire_mandates += bline.mandate_id
-                elif bline.mandate_id.type == 'recurrent':
-                    seq_type = bline.mandate_id.recurrent_sequence_type
+            all_mandates = order.with_context(
+                prefetch_fields=False).bank_line_ids.mapped('mandate_id')
+            for mandate in self.chunked(
+                    all_mandates,
+                    note='Collecting mandate modifications'):
+                if mandate.type == 'oneoff':
+                    to_expire_mandates += mandate
+                elif mandate.type == 'recurrent':
+                    seq_type = mandate.recurrent_sequence_type
                     if seq_type == 'final':
-                        to_expire_mandates += bline.mandate_id
+                        to_expire_mandates += mandate
                     elif seq_type == 'first':
-                        first_mandates += bline.mandate_id
+                        first_mandates += mandate
 
             all_mandates.write(
                 {'last_debit_date': fields.Date.context_today(self)})
