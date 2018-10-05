@@ -45,8 +45,9 @@ class BankingExportPain(models.AbstractModel):
                          i+1, min(i + size, length), length, model)
             if whole:
                 yield self.env[model].browse(ids[i:i + size])
-            for record in self.env[model].browse(ids[i:i + size]):
-                yield record
+            else:
+                for record in self.env[model].browse(ids[i:i + size]):
+                    yield record
 
     @api.model
     def _validate_iban(self, iban):
