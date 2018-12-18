@@ -10,14 +10,18 @@ class PaymentOrder(models.Model):
     @api.multi
     def action_rejected(self):
         res = super(PaymentOrder, self).action_rejected()
-        self.mapped('line_ids').mapped('mandate_id').amendment_reset()
+        self.env['account.banking.mandate'].browse(
+            self.with_context(prefetch_fields=False).mapped(
+                'line_ids.mandate_id').ids).amendment_reset()
         return res
 
     @api.multi
     def action_sent(self):
         """ Lazy compatibility with account_banking_payment_transfer """
         res = super(PaymentOrder, self).action_sent()
-        self.mapped('line_ids').mapped('mandate_id').amendment_sent()
+        self.env['account.banking.mandate'].browse(
+            self.with_context(prefetch_fields=False).mapped(
+                'line_ids.mandate_id').ids).amendment_sent()
         return res
 
     @api.multi
@@ -25,5 +29,7 @@ class PaymentOrder(models.Model):
         res = super(PaymentOrder, self).action_done()
         if not hasattr(self, 'action_sent'):
             # no account_banking_payment_transfer
-            self.mapped('line_ids').mapped('mandate_id').amendment_sent()
+            self.env['account.banking.mandate'].browse(
+                self.with_context(prefetch_fields=False).mapped(
+                    'line_ids.mandate_id').ids).amendment_sent()
         return res

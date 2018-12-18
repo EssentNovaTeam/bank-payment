@@ -4,9 +4,13 @@
 # © 2013-2014 ACSONE SA (<http://acsone.eu>).
 # © 2014-2015 Akretion (www.akretion.com)
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
-
+import logging
+import time
 from openerp import models, fields, api, _
 from openerp.exceptions import Warning as UserError
+from openerp.models import PREFETCH_MAX
+
+logger = logging.getLogger(__name__)
 
 
 class PaymentOrder(models.Model):
@@ -67,6 +71,9 @@ class PaymentOrder(models.Model):
     partial_reconcile_count = fields\
         .Integer(string='Partial Reconciles Counter',
                  compute='get_partial_reconcile_count')
+    transfer_move_lines = fields.Many2many(
+        'account.move.line', 'rel_payment_order_transfer_move_line',
+        'order_id', 'move_line_id', readonly=True)
 
     @api.multi
     def action_rejected(self):
@@ -79,33 +86,20 @@ class PaymentOrder(models.Model):
         return super(PaymentOrder, self).action_done()
 
     @api.multi
-    def _get_transfer_move_lines(self):
-        """
-        Get the transfer move lines (on the transfer account).
-        """
-        res = []
-        for order in self:
-            for bank_line in order.bank_line_ids:
-                move_line = bank_line.transfer_move_line_id
-                if move_line:
-                    res.append(move_line)
-        return res
-
-    @api.multi
     def get_transfer_move_line_ids(self, *args):
         '''Used in the workflow for trigger_expr_id'''
-        return [move_line.id for move_line in self._get_transfer_move_lines()]
+        return self.mapped('transfer_move_lines').ids
 
     @api.multi
     def test_done(self):
         """
-        Test if all moves on the transfer account are reconciled.
+        Test if there is not an unreconciled transfer move line.
 
         Called from the workflow to move to the done state when
         all transfer move have been reconciled through bank statements.
         """
-        return all([move_line.reconcile_id for move_line in
-                    self._get_transfer_move_lines()])
+        self.ensure_one()
+        return all(line.reconcile_id for line in self.transfer_move_lines)
 
     @api.multi
     def test_undo_done(self):
@@ -201,11 +195,75 @@ class PaymentOrder(models.Model):
 
     @api.multi
     def _reconcile_payment_lines(self, bank_payment_lines):
+        """ Now that the downstream method circumvents ORM triggers on
+        reconciliation, collect the ids of the reconciled move lines. Run
+        triggers manually and pass on the ids on for manual processing in
+        overrides of this method """
+        reconciled_ids = []
         for bline in bank_payment_lines:
             if all([pline.move_line_id for pline in bline.payment_line_ids]):
-                bline.debit_reconcile()
+                reconciled_ids += bline.debit_reconcile()
             else:
                 self.action_sent_no_move_line_hook(bline)
+
+        # Call triggers manually
+        t0 = time.time()
+        reconciled = self.env['account.move.line'].browse(reconciled_ids)
+        self.env.invalidate([
+            (reconciled._fields['reconcile_partial_id'], reconciled.ids),
+            (reconciled._fields['reconcile_id'], reconciled.ids),
+        ])
+        result_store = reconciled._store_get_values(
+            ['reconcile_id', 'reconcile_partial_id'])
+        reconciled.modified(['reconcile_id', 'reconcile_partial_id'])
+
+        for _order, model, store_ids, field_names in result_store:
+            obj = self.env[model]
+            self.env.cr.execute(
+                'select id from ' + obj._table + ' where id IN %s',
+                (tuple(store_ids),))
+            record_ids = map(lambda x: x[0], self.env.cr.fetchall())
+            if record_ids:
+                obj.browse(record_ids)._store_set_values(field_names)
+
+        # recompute new-style fields
+        reconciled.recompute()
+        logger.debug('Triggers for %s move lines took %ss',
+                     len(reconciled), round((time.time() - t0), 2))
+
+        return reconciled_ids
+
+    @api.model
+    def chunked(self, records_or_ids, model=None, size=PREFETCH_MAX,
+                whole=False, note=None):
+        """ Generator to iterate over potentially large amounts of records
+        while keeping cache size under control. """
+        ids = records_or_ids
+        if isinstance(records_or_ids, models.BaseModel):
+            ids = records_or_ids.with_context(prefetch=False).ids
+            model = records_or_ids._name
+        if not model:
+            raise Warning(
+                'If you pass ids to be chunked you also have to pass a model')
+        length = len(ids)
+        if note is None:
+            note = ''
+        if note:
+            note = '%s: ' % note
+        for i in range(0, length, size):
+            self.env.invalidate_all()
+            logger.debug('%sFetching %s-%s of %s records_or_ids of model %s',
+                         note, i + 1, min(i + size, length), length, model)
+            if whole:
+                yield self.env[model].browse(ids[i:i + size])
+            else:
+                for record in self.env[model].browse(ids[i:i + size]):
+                    yield record
+
+    @api.model
+    def _create_move_line_transfer_account(self, vals):
+        """ Override me """
+        return self.env['account.move.line'].create(vals)
 
     @api.one
     def action_sent(self):
@@ -215,7 +273,6 @@ class PaymentOrder(models.Model):
         generated.
         """
         am_obj = self.env['account.move']
-        aml_obj = self.env['account.move.line']
         labels = {
             'payment': _('Payment'),
             'debit': _('Direct debit'),
@@ -226,26 +283,63 @@ class PaymentOrder(models.Model):
             # key = unique identifier (date or True or line.id)
             # value = [pay_line1, pay_line2, ...]
             trfmoves = {}
-            for bline in self.bank_line_ids:
+            bl_ids = self.bank_line_ids.ids
+            bl_model = 'bank.payment.line'
+            logger.debug("Getting hash codes for bank payment lines.")
+            for bline in self.chunked(bl_ids, model=bl_model,
+                                      note='Generating hash codes'):
                 hashcode = bline.move_line_transfer_account_hashcode()
                 if hashcode in trfmoves:
-                    trfmoves[hashcode].append(bline)
+                    trfmoves[hashcode].append(bline.id)
                 else:
-                    trfmoves[hashcode] = [bline]
-
-            for hashcode, blines in trfmoves.iteritems():
+                    trfmoves[hashcode] = [bline.id]
+            transfer_move_line_ids = []
+            for hashcode, bline_ids in trfmoves.iteritems():
                 mvals = self._prepare_transfer_move()
+                logger.debug("Creating transfer move with values: %s", mvals)
                 move = am_obj.create(mvals)
                 total_amount = 0
-                for bline in blines:
-                    total_amount += bline.amount_currency
-                    self._create_move_line_partner_account(bline, move, labels)
-                # create the payment/debit move line on the transfer account
-                trf_ml_vals = self._prepare_move_line_transfer_account(
-                    total_amount, move, blines, labels)
-                aml_obj.create(trf_ml_vals)
-                self._reconcile_payment_lines(blines)
-                move.post()
+
+                # Chop up the bank payment lines in parts of size PREFETCH_MAX
+                # and bulk create the payment/debit move line on the transfer
+                # account.
+                logger.debug("Creating payment/debit move lines for "
+                             "partners accounts.")
+                for bls in self.chunked(bline_ids, model=bl_model, whole=True,
+                                        note='Generating partner move lines'):
+                    total_amount += sum(bls.mapped('amount_currency'))
+                    self._create_move_line_partner_account(bls, move, labels)
+
+                # Get at most 2 bank lines to generate the transfer move line
+                # from. There is no need to pass the entire subset of bank
+                # payment lines just to take values from 1 or 2 lines.
+                subset_bank_lines = self.with_context(
+                    prefetch_fields=False).env[bl_model].browse(bline_ids[:2])
+                trf_ml_vals = self.with_context(
+                    prefetch_fields=False)._prepare_move_line_transfer_account(
+                        total_amount, move, subset_bank_lines, labels)
+                transfer_move_line_ids.append(
+                    self._create_move_line_transfer_account(trf_ml_vals).id)
+
+                logger.debug("Successfully created payment/debit transfer "
+                             "move.")
+                # Reconcile the new move lines with the payment lines.
+                logger.debug("Starting reconciliation of payment lines.")
+                for bls in self.chunked(bline_ids, model=bl_model, whole=True,
+                                        note='Payment line reconciliation'):
+                    self._reconcile_payment_lines(bls)
+
+                if move.with_context(
+                        prefetch_fields=False).journal_id.entry_posted:
+                    logger.debug("Posting transfer move.")
+                    move.post()
+                self.env.invalidate_all()
+
+            self.write({
+                'transfer_move_lines': [(6, 0, transfer_move_line_ids)]})
+
+        logger.debug("Successfully completed action_sent of payment orders %s",
+                     ",".join(self.mapped('reference')))
 
         # State field is written by act_sent_wait
         self.write({'date_sent': fields.Date.context_today(self)})
