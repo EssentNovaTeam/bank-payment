@@ -2,7 +2,7 @@
 # © 2010-2015 Akretion (www.akretion.com)
 # © 2014 Serv. Tecnol. Avanzados - Pedro M. Baeza
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
-
+import six
 from openerp import models, fields, api, _
 from openerp.exceptions import Warning
 from openerp import workflow
@@ -172,40 +172,46 @@ class BankingExportSepaWizard(models.TransientModel):
             transactions_count_2_4 = 0
             amount_control_sum_2_5 = 0.0
             for line in self.chunked(line_ids, model='bank.payment.line'):
-                transactions_count_1_6 += 1
-                transactions_count_2_4 += 1
-                # C. Credit Transfer Transaction Info
-                credit_transfer_transaction_info_2_27 = etree.SubElement(
-                    payment_info_2_0, 'CdtTrfTxInf')
-                payment_identification_2_28 = etree.SubElement(
-                    credit_transfer_transaction_info_2_27, 'PmtId')
-                end2end_identification_2_30 = etree.SubElement(
-                    payment_identification_2_28, 'EndToEndId')
-                end2end_identification_2_30.text = self._prepare_field(
-                    'End to End Identification', 'line.name',
-                    {'line': line}, 35, gen_args=gen_args)
-                currency_name = self._prepare_field(
-                    'Currency Code', 'line.currency.name',
-                    {'line': line}, 3, gen_args=gen_args)
-                amount_2_42 = etree.SubElement(
-                    credit_transfer_transaction_info_2_27, 'Amt')
-                instructed_amount_2_43 = etree.SubElement(
-                    amount_2_42, 'InstdAmt', Ccy=currency_name)
-                instructed_amount_2_43.text = '%.2f' % line.amount_currency
-                amount_control_sum_1_7 += line.amount_currency
-                amount_control_sum_2_5 += line.amount_currency
-                if not line.bank_id:
-                    raise Warning(
-                        _("Bank account is missing on the bank payment line "
-                            "of partner '%s' (reference '%s').")
-                        % (line.partner_id.name, line.name))
-                self.generate_party_block(
-                    credit_transfer_transaction_info_2_27, 'Cdtr',
-                    'C', 'line.partner_id.name', 'line.bank_id.acc_number',
-                    'line.bank_id.bank.bic or '
-                    'line.bank_id.bank_bic', {'line': line}, gen_args)
-                self.generate_remittance_info_block(
-                    credit_transfer_transaction_info_2_27, line, gen_args)
+                try:
+                    transactions_count_1_6 += 1
+                    transactions_count_2_4 += 1
+                    # C. Credit Transfer Transaction Info
+                    credit_transfer_transaction_info_2_27 = etree.SubElement(
+                        payment_info_2_0, 'CdtTrfTxInf')
+                    payment_identification_2_28 = etree.SubElement(
+                        credit_transfer_transaction_info_2_27, 'PmtId')
+                    end2end_identification_2_30 = etree.SubElement(
+                        payment_identification_2_28, 'EndToEndId')
+                    end2end_identification_2_30.text = self._prepare_field(
+                        'End to End Identification', 'line.name',
+                        {'line': line}, 35, gen_args=gen_args)
+                    currency_name = self._prepare_field(
+                        'Currency Code', 'line.currency.name',
+                        {'line': line}, 3, gen_args=gen_args)
+                    amount_2_42 = etree.SubElement(
+                        credit_transfer_transaction_info_2_27, 'Amt')
+                    instructed_amount_2_43 = etree.SubElement(
+                        amount_2_42, 'InstdAmt', Ccy=currency_name)
+                    instructed_amount_2_43.text = '%.2f' % line.amount_currency
+                    amount_control_sum_1_7 += line.amount_currency
+                    amount_control_sum_2_5 += line.amount_currency
+                    if not line.bank_id:
+                        raise Warning(
+                            _("Bank account is missing on the bank payment "
+                              "line of partner '%s' (reference '%s').")
+                            % (line.partner_id.name, line.name))
+                    self.generate_party_block(
+                        credit_transfer_transaction_info_2_27, 'Cdtr',
+                        'C', 'line.partner_id.name', 'line.bank_id.acc_number',
+                        'line.bank_id.bank.bic or '
+                        'line.bank_id.bank_bic', {'line': line}, gen_args)
+                    self.generate_remittance_info_block(
+                        credit_transfer_transaction_info_2_27, line, gen_args)
+
+                except Exception as exc:
+                    details_str = self.get_line_details(line)
+                    six.raise_from(Warning(details_str), exc)
+
             if pain_flavor in pain_03_to_05:
                 nb_of_transactions_2_4.text = unicode(transactions_count_2_4)
                 control_sum_2_5.text = '%.2f' % amount_control_sum_2_5
